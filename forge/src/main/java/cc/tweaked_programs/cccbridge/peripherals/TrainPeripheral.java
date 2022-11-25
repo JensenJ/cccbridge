@@ -1,34 +1,21 @@
 package cc.tweaked_programs.cccbridge.peripherals;
 
-import com.simibubi.create.Create;
-import com.simibubi.create.content.logistics.trains.GraphLocation;
 import com.simibubi.create.content.logistics.trains.entity.Train;
-import com.simibubi.create.content.logistics.trains.management.edgePoint.station.GlobalStation;
+import com.simibubi.create.content.logistics.trains.management.edgePoint.station.StationEditPacket;
 import com.simibubi.create.content.logistics.trains.management.edgePoint.station.StationTileEntity;
-import com.simibubi.create.content.logistics.trains.management.edgePoint.station.TrainEditPacket.TrainEditReturnPacket;
-import com.simibubi.create.content.logistics.trains.management.schedule.Schedule;
+import com.simibubi.create.content.logistics.trains.management.edgePoint.station.TrainEditPacket;
 import com.simibubi.create.foundation.networking.AllPackets;
-import com.simibubi.create.foundation.utility.Lang;
 import dan200.computercraft.api.lua.LuaFunction;
 import dan200.computercraft.api.lua.MethodResult;
-import dan200.computercraft.api.peripheral.IComputerAccess;
 import dan200.computercraft.api.peripheral.IPeripheral;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
 import net.minecraft.world.level.Level;
-import net.minecraftforge.network.PacketDistributor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Objects;
-import java.util.UUID;
-
 
 public class TrainPeripheral implements IPeripheral {
-    private static Schedule schedule;
-    private final List<IComputerAccess> connectedComputers = new ArrayList<>();
     private final Level level;
     private final StationTileEntity station;
 
@@ -51,19 +38,13 @@ public class TrainPeripheral implements IPeripheral {
     @LuaFunction
     public final MethodResult assemble() {
         if (station.getStation().getPresentTrain() != null) {
-            return MethodResult.of(false, "Train already assembled");
+            return MethodResult.of(false, "Train is already assembled");
         }
-        if (station.tryEnterAssemblyMode()) {
-            station.assemble(UUID.fromString("069a79f4-44e9-4726-a5be-fca90e38aaf5"));
-            station.tick();
-            if (schedule == null) {
-                return MethodResult.of(true, "No schedule found");
-            }
-            station.getStation().getPresentTrain().runtime.setSchedule(schedule, true);
-            schedule = null;
+        if (station.getStation().assembling) {
+            AllPackets.channel.sendToServer(StationEditPacket.tryAssemble(station.getBlockPos()));
             return MethodResult.of(true, "Train assembled");
         }
-        return MethodResult.of(false, "Could not assemble train");
+        return MethodResult.of(false, "Train could not be assembled");
     }
 
     /**
@@ -74,13 +55,10 @@ public class TrainPeripheral implements IPeripheral {
     @LuaFunction
     public final MethodResult disassemble() {
         if (station.getStation().getPresentTrain() == null) {
-            return MethodResult.of(false, "Train not assembled");
+            return MethodResult.of(false, "An assembled train is not present");
         }
         if (station.getStation().getPresentTrain().canDisassemble()) {
-            Direction direction = station.getAssemblyDirection();
-            BlockPos position = station.edgePoint.getGlobalPosition().above();
-            schedule = station.getStation().getPresentTrain().runtime.getSchedule();
-            station.getStation().getPresentTrain().disassemble(direction, position);
+            AllPackets.channel.sendToServer(StationEditPacket.configure(station.getBlockPos(), true, station.getStation().name));
             return MethodResult.of(true, "Train disassembled");
         }
         return MethodResult.of(false, "Could not disassemble train");
@@ -108,7 +86,6 @@ public class TrainPeripheral implements IPeripheral {
         }else {
             return MethodResult.of(true, Objects.requireNonNull(station.getStation().getPresentTrain()).name.getString());
         }
-
     }
 
     /**
@@ -119,17 +96,12 @@ public class TrainPeripheral implements IPeripheral {
      */
     @LuaFunction
     public final boolean setStationName(@NotNull String name) {
-        GlobalStation station2 = station.getStation();
-        GraphLocation graphLocation = station.edgePoint.determineGraphLocation();
-        if (station2 != null && graphLocation != null) {
-            station2.name = name;
-            Create.RAILWAYS.sync.pointAdded(graphLocation.graph, station2);
-            Create.RAILWAYS.markTracksDirty();
-            station.notifyUpdate();
-            return true;
+        if(station.getStation().assembling){
+            AllPackets.channel.sendToServer(StationEditPacket.configure(station.getBlockPos(), true, name));
+        }else{
+            AllPackets.channel.sendToServer(StationEditPacket.configure(station.getBlockPos(), false, name));
         }
-        //AllPackets.channel.sendToServer(StationEditPacket.configure(station.getBlockPos(),false,name));
-        return false;
+        return true;
     }
 
     /**
@@ -143,18 +115,11 @@ public class TrainPeripheral implements IPeripheral {
         if (station.getStation().getPresentTrain() == null) {
             return MethodResult.of(false, "There is no train to set the name of");
         }
-        Train train = station.getStation().getPresentTrain();
-        Train Train = Create.RAILWAYS.sided(level).trains.get(train.id);
-        if (Train == null) {
-            return MethodResult.of(false, "Train not found");
-        }
         if (!name.isBlank()) {
-            Train.name = Lang.translateDirect(name);
-            station.tick();
-            AllPackets.channel.send(PacketDistributor.ALL.noArg(), new TrainEditReturnPacket(Train.id, name, Train.icon.getId()));
-            return MethodResult.of(true, "Train name set to" + name);
+            Train train = station.getStation().getPresentTrain();
+            AllPackets.channel.sendToServer(new TrainEditPacket(train.id, name, train.icon.getId()));
+            return MethodResult.of(true, "Set train name to " + name);
         }
-        //AllPackets.channel.sendToServer(new TrainEditPacket(train.id, name,train.icon.getId()));
         return MethodResult.of(false, "Train name cannot be blank");
     }
 
@@ -179,14 +144,6 @@ public class TrainPeripheral implements IPeripheral {
     @LuaFunction
     public final boolean getPresentTrain() {
         return station.getStation().getPresentTrain() != null;
-    }
-
-    /**
-     * Clears the schedule saved in the station.
-     */
-    @LuaFunction
-    public final void clearSchedule() {
-        schedule = null;
     }
 
     @Override
